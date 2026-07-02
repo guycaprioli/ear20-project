@@ -40,20 +40,20 @@
 **MOVES.** One RF observation, serialized as a single JSONL line, written by the scanner.
 
 **PRODUCER GUARANTEES (scanner).**
-- Emits exactly these fields: `time`, `agent_id`, `band`, `earfcn`, `frequency_mhz`, `power_dbm`, `direction`, `observation_count`, `filter_action`, `duty_cycle`, `schema_version`.
-- `time` is ISO-8601 UTC, taken from the host's NTP-synced clock, and represents the **observation** moment.
+- Emits these core fields: `observed_at`, `agent_id`, `band`, `earfcn`, `frequency_mhz`, `power_dbm`, `config_version`, `schema_version`. *(The canonical field set is `contracts/schemas/observation-signal.v5.schema.json` — authoritative over this prose per D-052; this list is descriptive.)* `observation_count`, `duty_cycle`, `filter_action`, and the advisory `power_bin` are **not** emitted by the scanner — they are added downstream at the edge-filter hop (R2/L4). There is **no** `direction` field (capture is uplink-only; the v5 signal schema forbids extra properties via `additionalProperties:false`). *(Reconciled per audit finding LEAD.2/DE.11/QA.8 — prose previously said `time`/`direction`, which the schema rejects.)*
+- `observed_at` is ISO-8601 UTC, taken from the host's NTP-synced clock, and represents the **observation** moment.
 - `agent_id` matches `^[a-z]{3}-rf\d+[a-d]$`, lowercase — facility-scoped (`ral-rf2a`); facility immutable (see L0).
 - Every row carries `schema_version="v5"` (greenfield). Enrichment REJECTS any other version to quarantine — no COALESCE absorption of legacy shapes (D-021). Legacy-corpus data enters only via the `ear-fixture` adapter, never production ingest (D-035).
-- `observation_count ≥ 1`; `duty_cycle ∈ [0,1]`.
+- On the signal feed (post-edge-filter, `obs_` files) `observation_count = 1` and `filter_action = 'FORWARD'`; `duty_cycle ∈ [0,1]` when present. These are edge-filter-added (R2/L4), not scanner-emitted (finding LEAD.3).
 
 **CONSUMER MAY ASSUME.** The fields above exist and are typed as stated. Nothing about calibration of `power_dbm`. Nothing about ordering within a file.
 
 **NEVER.**
 - `power_dbm` is **uncalibrated relative** dB; it is never re-interpreted as absolute/calibrated power. Calibration, if ever added, is a *new* field.
-- `time` is never the write time or upload time.
+- `observed_at` is never the write time or upload time. The legacy name `time` is not valid v5 (D-052); the fixture/adapter maps it.
 - A field's meaning never changes (R0.1); unknown new fields are ignored by consumers, missing required fields fail loudly.
 
-**ENFORCED BY.** A shared JSON-Schema (`observation.schema.json`) committed to both repos. Agent validates at write time (unit test). Loader validates at ingest: violations are counted, logged, and quarantined — **never silently dropped** (replaces the current `ignore_errors=true`).
+**ENFORCED BY.** The shared JSON-Schemas `contracts/schemas/observation-signal.v5.schema.json` (signal feed) and `observation-context.v5.schema.json` (context feed) — committed to both repos and **authoritative over this prose** (D-052). A CI check diffs this prose field list against the schemas so they cannot drift again (finding LEAD.2/DE.11/QA.8). Agent validates at write time (unit test). Loader validates at ingest: violations are counted, logged, and quarantined — **never silently dropped** (replaces the current `ignore_errors=true`).
 
 > **CHANGES from current behavior (choose consciously):** (1) add `schema_version` to the row — small agent change; (2) NTP-synced clocks become a *provisioning requirement*, because CV analysis of inter-event gaps across 60 sensors is meaningless if clocks drift; (3) loader stops silently discarding malformed rows.
 
@@ -65,7 +65,7 @@
 
 **PRODUCER GUARANTEES (uploader).**
 - `filter_action = 'FORWARD'` → one output row **per raw observation**, `observation_count = 1`. Full fidelity.
-- `filter_action = 'AGGREGATE'` → **one** row per cluster per file; `observation_count` = true count in the cluster; `time` = representative (median) observation time.
+- `filter_action = 'AGGREGATE'` → **one** row per cluster per file; `observation_count` = true count in the cluster; `observed_at` = representative (median) observation time.
 - `filter_action = 'FILTER'` → **one** summary row per cluster; `observation_count` = true count; power = cluster average.
 - The thresholds that produced the classification are recorded.
 
@@ -166,7 +166,7 @@
 - Malformed rows are never silently dropped — counted, logged, quarantined (R1 enforcement).
 - The date-in-filename is never the newness test.
 
-**ENFORCED BY.** Ledger uniqueness constraint on filename(+size/etag). Transactional insert+ledger write (crash cannot record an unfinished load). Post-load assertion: `observations` row delta == sum of ledger row_counts for the batch.
+**ENFORCED BY.** Ledger uniqueness constraint on filename(+size/etag). Transactional insert+ledger write (crash cannot record an unfinished load). Post-load **conservation identity** (finding DE.1/QA.7, SEAM-1): `observations_delta + quarantined_delta == Σ ledger.row_count` for the batch — quarantined rows are **counted, not silently subtracted** from the identity (the two-term form `observations_delta == Σ row_count` was arithmetically false the instant any row quarantined — a designed path — and halted every dirty-row run). Quarantine is a **non-halting** outcome: a run with quarantined rows exits 0, records `quarantined_count` (with reason breakdown) on the run, and alerts only when the quarantine **ratio** exceeds a configured threshold (mirrors the over-filter safeguard). This is the same identity the fixture whole-run "Conservation" assertion states end-to-end (`agent.raw == observations + quarantined + suppressed_summarized`, with an L4.5-forced EARFCN counted once and `quarantined ∩ summarized = ∅`).
 
 ---
 
@@ -252,7 +252,7 @@
 | Rule | Check | Where it runs |
 |---|---|---|
 | R0.2 versioning | `schema_version` present + known | agent write test, loader ingest |
-| R1 record shape | shared `observation.schema.json` | agent unit test + loader |
+| R1 record shape | shared `observation-signal.v5.schema.json` + `observation-context.v5.schema.json` (D-052) | agent unit test + loader |
 | R2 edge semantics | FORWARD-only CV; AGGREGATE fixture → 0 false CRITICAL | pipeline contract test |
 | R3 file rules | filename regex, write-once, settle barrier | agent test |
 | R4 transport | prefix=agent_id, size-verify, atomic PUT | sync integrity check |

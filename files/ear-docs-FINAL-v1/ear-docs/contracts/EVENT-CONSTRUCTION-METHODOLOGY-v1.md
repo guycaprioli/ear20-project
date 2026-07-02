@@ -18,9 +18,9 @@
 
 **Event construction (Level 1 — dataset prep), in order:**
 1. **Power-bin grouping** — establish which device/signal (with Pass-2 boundary reconciliation, see below).
-2. **Sweep collapse** — merge the undersampled sweep-hits of a *single transmission* into one detection (the consolidation window; earnest-v3 used 2s — confirm target value, likely tied to sweep revisit time).
-3. **Burst grouping = THE EVENT** — group detections separated by less than the burst gap into one burst/activity episode. **This burst group is the event.** A gap greater than the burst threshold ends one event and begins the next.
-4. **Noise filtering** — remove infrastructure/known-benign/sub-threshold.
+2. **Noise filtering** — remove infrastructure/known-benign/sub-threshold, computed on **raw enriched observation counts** (`SUM(observation_count)`) *before* sweep-collapse, so "total activity" is measured over raw observations, not collapsed detections. *(Canonical order, finding RF.5 — this matches R7, the handoff contract, RFANALYSIS-SCOPE, and the prose below; an earlier numbered list here wrongly put noise-filtering last, which would change the activity count and make P15's "survives" verdict order-dependent.)*
+3. **Sweep collapse** — merge the undersampled sweep-hits of a *single transmission* into one detection (the consolidation window; earnest-v3 used 2s — confirm target value, likely tied to sweep revisit time, Q-06).
+4. **Burst grouping = THE EVENT** — group detections separated by less than the burst gap into one burst/activity episode. **This burst group is the event.** A gap greater than the burst threshold ends one event and begins the next.
 5. Output: the **event dataset** — the handoff to analysis.
 
 **Burst gap threshold (SETTLED — validated default, tunable).**
@@ -117,6 +117,8 @@ ELSE                                                     → 'pass'
 
 Without this exception (as in earnest-v3's presence-only rule), a tracker that beacons hourly would be present in ~100% of hours → classified `infrastructure` → discarded — silently filtering away *the exact device the system hunts*. This exception is the whole reason the filter is presence-**and-activity**, not presence-only.
 
+> **APPLICABILITY — which trackers this exception actually protects (finding QA.16/A1; corrects a mechanism mis-description in D-028 and D-057/P15).** The low-duty exception's **first clause requires `present in ≥ infra_hours` (≈ every hour)**. It therefore protects the *near-omnipresent-but-sparse* G1 sub-pattern — the **hourly interval reporter** (persona P2), present in ~100% of hours with low total activity. It does **NOT** fire for a **multi-hour-to-multi-day deep-sleeper** (the 20595 class, persona P15): such a device is present in only a handful of hours out of the window (e.g. ~4 of 240), so it is **not** `≥ infra_hours` and never reaches the exception branch. **A deep-sleeper survives solely via `total activity ≥ MIN_OBSERVATIONS` → the ELSE → `pass`.** Consequently `MIN_OBSERVATIONS` — not the low-duty exception — is the load-bearing survival floor for the primary target, and it must be set from the *smallest survivable deep-sleep total* (see the primary-target survival budget). Do not describe the presence exception as the deep-sleeper's protection; it is not.
+
 **Signature filtering (complementary, human-curated).** Alongside the statistical filter, known infrastructure is rejected by identity via the curated `InfrastructureSignature` table (EARFCN/bin) and the upload-side L4.5 overrides. Statistical filtering catches *unknown* infrastructure by behavior; signature filtering catches *known* infrastructure by identity. Both feed `filter_decision`.
 
 **Over-filtering safeguard.** If the filter would reject more than a configured fraction of devices, it reverts to **pass-all** and flags the run, rather than silently emptying the dataset (guards against a bad threshold nuking everything).
@@ -126,7 +128,7 @@ Without this exception (as in earnest-v3's presence-only rule), a tracker that b
 |---|---|---|
 | `presence_ratio` | 0.95 | Fraction of hours ⇒ "present nearly always" |
 | `ACTIVITY_PER_HOUR` (duty-cycle multiplier) | **40** | Below `timeframe×40` total obs ⇒ sparse ⇒ battery-tracker exception. **The single most important knob — separates power-saving tracker from infrastructure.** |
-| `MIN_OBSERVATIONS` | (validated default) | Below this ⇒ `noise` |
+| `MIN_OBSERVATIONS` | **PENDING — Guy must set (Q, Phase B)** | Below this ⇒ `noise`. **The load-bearing survival floor for the deep-sleeper primary target** (QA.16/A1) — the exception above does *not* protect a multi-day-silent device, so this floor alone decides whether it lives; set it from the smallest survivable deep-sleep total and pin a `MIN_OBSERVATIONS ± 1` boundary persona. |
 | over-filter safeguard ratio | (validated default) | Revert to pass-all if exceeded |
 
 **NEVER.**

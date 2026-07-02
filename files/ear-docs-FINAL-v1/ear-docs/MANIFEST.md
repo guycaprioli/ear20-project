@@ -1,15 +1,15 @@
 # EAR System — Document Manifest (final v1 · pre-code · for expert review)
 
 **Start:** `README.md` (index) → `REVIEW-BRIEF.md` (reviewers) → by area below.
-**State:** 60 decisions (`DECISION-LOG-v1`), 22+4 open questions (`OPEN-QUESTIONS-v1`), 19 fixture personas, runsheet S00–S21. Nothing built.
+**State:** 62 decisions (`DECISION-LOG-v1`, D-001…D-062), 25+4 open questions (`OPEN-QUESTIONS-v1`, Q-01…Q-25 + Q-T1…Q-T4), 19 fixture personas, runsheet S00–S21 (+S19a–e). Nothing built.
 
 ## Tree
 ```
 README.md                     index / entry point
 REVIEW-BRIEF.md               for the 7-expert panel
 MANIFEST.md                   this file
-DECISION-LOG-v1.md            D-001..D-059 + rationale ([CLAUDE-DECIDED] = review)
-OPEN-QUESTIONS-v1.md          Q-01..Q-22, Q-T1..Q-T4
+DECISION-LOG-v1.md            D-001..D-062 + rationale ([CLAUDE-DECIDED] = review)
+OPEN-QUESTIONS-v1.md          Q-01..Q-25, Q-T1..Q-T4
 
 contracts/                    THE LAW (implemented, not redesigned)
   DATA-WORKFLOW-RULES-v3.md         R0..R9 chain
@@ -51,4 +51,4 @@ archive/                      superseded versions (history; not for review)
 - **Security:** DECISION-LOG (D-050/D-036/D-002), DEV-ENVIRONMENT, + the acknowledged WP-O3 gap
 - **Test/QA:** GOLDEN-FIXTURE-SPEC, BUILD-RUNSHEET (verification protocol), DASHBOARD-DESIGN (UAT)
 - **SRE/ops:** RUNBOOK, HEALTH-CHECKS, BACKUP-DR, HOST-PROVISIONING, PARAMETER-TUNING
-- **Arch/PM:** GREENFIELD-DEVELOPMENT-PLAN, BUILD-RUNSHEET, DECISION-LOG (structure D-030..D-059)
+- **Arch/PM:** GREENFIELD-DEVELOPMENT-PLAN, BUILD-RUNSHEET, DECISION-LOG (structure D-030..D-062)

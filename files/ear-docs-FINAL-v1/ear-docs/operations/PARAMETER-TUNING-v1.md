@@ -39,8 +39,10 @@ RF tracker detection often lacks known ground truth for real-world data. More ca
 | Pass-2 boundary threshold | Prep | **OPEN** | Power-boundary reconciliation (algorithm not yet built) |
 | Power bin size | Prep | 2 dBm | Base quantization |
 | CV thresholds (tracker/periodic) | Analysis | 0.3 / 0.5 | Pattern classification |
-| Presence / infrastructure ratio | Analysis/filter | ~0.8 | Noise filtering |
-| Min events for analysis | Analysis | 3 | Below this, no meaningful CV |
+| Presence ratio (`presence_ratio`) | **Prep (Level 1)** | **0.95** | Noise filtering — "present nearly always". *(Corrected from ~0.8/Analysis — finding LEAD.4/RF.4: 0.8 is earnest-v3's **rejected** presence-only value; authoritative is 0.95, in the prep layer.)* |
+| Duty-cycle multiplier (`ACTIVITY_PER_HOUR`) | Prep (Level 1) | **40** | Below `timeframe×40` ⇒ sparse ⇒ battery-tracker exception (protects the *hourly* beacon, not the deep-sleeper). |
+| `MIN_OBSERVATIONS` | Prep (Level 1) | **PENDING (Guy)** | Below ⇒ `noise`. **The deep-sleeper's actual survival floor** (QA.16/A1) — set from the smallest survivable deep-sleep total. |
+| Min events for analysis (`min_events`) | Analysis (Level 2) | 3 | Below this, no meaningful CV — **but the deep-sleeper path must bypass this floor** (score on the few gaps + recency), else a 4-event/3-gap deep-sleeper is starved at L2 (QA.5). |
 
 ---
 

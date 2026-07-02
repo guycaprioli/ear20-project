@@ -2,7 +2,7 @@
 ### Clarifications wanted from Guy, ordered by when they block. Answer inline and commit, or answer in-session.
 
 ## Blocks M0 (repo creation / first sessions)
-- **Q-01** Repo naming: accept the `ear-` prefix and the five names (`ear-docs`, `ear-agent`, `ear-server`, `ear-fixture`, `ear-fleet`)? Any GitHub org vs personal account preference?
+- **Q-01** Repo naming: accept the `ear-` prefix and the **six** names (`ear-docs`, `ear-agent`, `ear-server`, `ear-fixture`, `ear-fleet`, **`ear-analysis`** — the 6th, un-deferred by D-055)? Any GitHub org vs personal account preference? *(Corrected from five — finding LEAD.5.)*
 - **Q-02** Confirm all repos **private** (D-036).
 - **Q-03** Did the Pass-2 boundary-reconciliation code turn up anywhere (branches, scratch dirs, a ninth repo)? If not found by M4, which candidate: boundary-zone / centroid-nearest / valley-test? (My provisional lean: centroid-nearest — best accuracy-per-compute; the WP-S5 benchmark will confirm affordability.)
 - **Q-04** Server topology (D-004): central multi-facility server, or per-facility appliance? Affects M3 deploy shape and where the L2 DB will eventually live.
@@ -43,4 +43,4 @@
 - **Q-25** Move Q-16/Q-17 (Level 2 report format/audience) into the early-answer set — they now block S19d.
 
 ## Post-effort review
-- **Q-18** Review `DECISION-LOG-v1.md` items **D-030…D-041** `[CLAUDE-DECIDED]` — veto or amend any before repos are created (cheapest moment to change them).
+- **Q-18** Review `DECISION-LOG-v1.md` items **D-030…D-062** (ALL `[CLAUDE-DECIDED]`) — veto or amend any before repos are created (cheapest moment to change them). **Structural, must-veto-pre-repo:** D-030–D-042, D-050 (secrets), D-052 (canonical schema — the field-name tie-breaker), D-061 (licensing). *(Range corrected from D-041 — finding LEAD.7; the schema and security decisions previously sat outside the stated review window.)*
