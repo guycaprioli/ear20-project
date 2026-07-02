@@ -1,0 +1,56 @@
+# Buildability Assessment — ear-agent (M2, Python capture/upload)
+
+**Track:** ear-agent · WP-A1..A6 · S06–S10 · **Bar: DEV environment** (replay CaptureSource + MinIO, no HackRF, no R2).
+**Question:** Can Fable/Opus/Sonnet build the scanner → queue/SAF → edge-filter/feed-split → uploader/heartbeat to *working dev code* from the docs alone, following the runsheet?
+
+**Verdict: buildable-after-cheap-doc-fixes.** ~80% builds as-written. The dev-env bar is genuinely favorable — D-046/D-047/D-048 give a complete, hardware-free replay loop and the WP/DoD/gate discipline is unusually concrete. But **two audit contradictions (A2 field-drift, A6 uploader cardinality) will make an agent build the WRONG thing and pass its own gate**, and both are cheap pre-session doc-fixes. Everything else is either specified or legitimately stub-able per the project's own DEFAULT-gate / seam discipline.
+
+---
+
+## 1. Specified well enough to build as-written
+
+| Area | What makes it buildable |
+|---|---|
+| **Runtime/process model** | EAR-AGENT-SPEC §"Runtime" + D-045/D-016: Python 3.12, pydantic-settings, structlog, boto3; 4 resident scanners (systemd template, staggered 0/3/6/9s) + 1 ephemeral uploader oneshot. Package layout given module-by-module. |
+| **Identity (L0)** | LOCAL-HOST-DATA-FLOW L0 is fully pinned: `agent_id={facility}-{host}{device}`, regex `^[a-z]{3}-rf\d+[a-d]$`, lowercase-at-every-boundary, serial-pinned device binding, band-by-letter. S06 gate = identity tests green. **This is the cleanest WP.** |
+| **Capture/parse/enrich (L1)** | Sweep stdout columns named (`date,time,hz_low,hz_high,bin_width,num_samples,dB…`), enrich field list given, bin→EARFCN mapping described. Modulo the field-drift bug (below), the shape is clear. |
+| **Write/rotation (L2)** | Filename template `obs_{agent_id}_{YYYY-MM-DD}_{NNNNNN}.jsonl`, 5min/50MB rotation, `MIN_FILE_AGE_MS=2s` settle guard, `FLUSH_INTERVAL_MS=5s`, atomic-rename-into-`pending/`, per-device folder isolation. Concrete. |
+| **Queue lifecycle (L3)** | pending→processing→completed/failed moves, write-complete barrier (move before read), crash re-queue of `processing/`, retention (completed 24h / failed 7d). |
+| **CaptureSource seam (D-046)** | The whole dev story: `CaptureSource → parser → enricher → writer` interface with `hackrf|replay` sources; replay does timestamp-shift + speed-factor, accepts raw stdout AND legacy JSONL; `--record` tee. S07 gate includes the **record→replay byte-identical round-trip** — a strong, checkable spec. |
+| **Feed split (L4/D-012)** | Structurally clear: `obs_` = FORWARD only; `ctx_` = AGGREGATE/FILTER summaries + L4.5 heartbeats + config stamp. Both schemas (signal.v5, context.v5) exist and are frozen with conditional `record_type` shapes. Binning ownership (agent bin advisory, server authoritative) is explicit and repeated. |
+| **L4.5 override** | Versioned per-EARFCN rule file, identity-only matching (never power_bin/behavioral), always-emit-heartbeat-never-silence, config_version travels. Schema has the `l45_heartbeat` record_type. Buildable. |
+| **Upload (L6)** | Identity-derived keys `{agent_id}/obs_…`/`ctx_…`, `_health/{agent_id}.json`, real gzip (fake-gzip class killed), atomic PUT, retry→DLQ, `schema_version=v5` stamp. |
+| **Dev harness (WP-A6/D-047)** | DEV-ENVIRONMENT-v2 gives container parity table, two-address rule (`localhost:9000` host-side / `minio:9000` in-network), bring-up order 0–5, disk layout. `S3_ENDPOINT_URL` is the only switch. MinIO/moto both specified. **The dev loop is fully specified.** |
+| **Verification** | D-058 gate protocol: one `make gate` command per session, committed gate report, named personas per session (P4/P7/P12/P14 at S09). Fixture-as-CI-gate is real. |
+
+The DoD, gate command, and per-session persona slices mean a session **can actually be closed objectively** — this is better than most greenfields.
+
+---
+
+## 2. Blocking gaps
+
+| # | Gap | Block or stub? | Who resolves |
+|---|---|---|---|
+| **G1** | **Field-drift (A2 / LEAD.2·DE.11·QA.8).** LOCAL-HOST-DATA-FLOW L1 says the scanner stamps `time` and `direction:'ul'`; the frozen v5 signal schema requires `observed_at`, has **no** `direction`, and `additionalProperties:false`. An agent coding L1 literally emits `{time, direction, …}` → **100% schema-fail / quarantine**, and its own S07 gate ("valid v5 rows") would catch it only if the agent trusts the schema over the prose — but L1's ENFORCED-BY points at `observationSchema.validate()` / a non-existent `observation.schema.json`, so a diligent agent could equally "fix" the schema to match the prose and cement the wrong truth. Also `duty_cycle`/`observation_count` ownership (scanner-time L1 vs edge-time L4) is contradictory (LEAD.3). | **BLOCKS** — this is a build-the-wrong-thing contradiction between two authoritative docs, not a missing value. The runsheet bootstrap says "schema wins on field questions" (D-052), which resolves `time→observed_at`, but D-052 is scoped to *names* and does NOT resolve `direction`/`additionalProperties` — that half is genuinely open. Cannot be safely stubbed. | **doc-fix** (cheap, pre-session, PRE-REPO): reconcile R1/L1 field list to schema in one paired commit; drop or add `direction`; fix ownership; fix ENFORCED-BY filename. Add the prose-vs-schema doc-lint. |
+| **G2** | **Uploader cardinality (A6 / LEAD.1·REL.1).** D-016/D-045/EAR-AGENT-SPEC say **1 shared uploader per host**; LOCAL-HOST-DATA-FLOW-v2 says in normative lines "4 independent uploaders per host" (diagram L26, "uploader one per device" L133, per-device DLQ L221). A builder reading the data-flow contract literally ships 4 uploaders + 4 DLQs — wrong run-lock, wrong heartbeat authorship, wrong disk-ceiling scope. Compounding: the **frozen** heartbeat schema is keyed per device-lettered `agent_id` with per-device `queue_depth`/`dlq_count`, so ONE shared uploader must author 4 device-scoped `_health/{agent_id}.json` files — buildable, but the doc never says *who authors the four* or how host-level `disk_pct` maps to 4 device rows. No `scope` field exists to disambiguate. | **BLOCKS** the uploader WP (S09) — the agent will pick a topology and it's a coin-flip which. Once picked it's baked into run-lock + heartbeat + ceiling. The heartbeat authorship detail (one uploader writes 4 files, disk_pct duplicated across the 4) can be *stubbed* once cardinality is decided, but the cardinality itself must be decided first. | **doc-fix** (cheap, pre-session, PRE-REPO): one heartbeat-semantics ADR — "one shared uploader; it authors N device heartbeats; disk_pct is host-level, replicated." Reconcile the data-flow doc's 4-uploader lines. |
+| **G3** | **Disk-ceiling eviction policy (A9/REL.7).** WP-A3/S08 gate = "ceiling tests green," but the *policy* is an explicit OPEN item ("cap+oldest-drop vs alert-and-hold," L5). No ceiling **value** either (depends on Q-10 hardware, unanswered). The audit shows oldest-drop silently destroys first-seen data and can drop the primary target below MIN_OBSERVATIONS — a wrong default has real consequences. | **STUB** for dev. The *mechanism* (check at run start, emit `ceiling` heartbeat status, alert) is specified and testable against a small configured cap. Ship `EVICTION_POLICY` config defaulting to **alert-and-hold** (the audit's safer default) with oldest-drop behind a flag, mark it clearly, test both branches. Dev doesn't need the production-sized value. | **agent-can-stub** (policy default + configurable cap) — but the *production default* is a **Guy-answer** (dissent-grade, ties to Q-10). |
+| **G4** | **thresholds.json values (Q-08).** Edge-filter FORWARD/AGGREGATE/FILTER classification needs concrete `minCount/cv/dutyCycle` numbers. Docs name the fields but **no v4.3 values appear anywhere in the corpus** — Q-08 is DEFAULT "carry v4.3 thresholds, re-derive in soak," but the v4.3 file isn't in ear-docs. | **STUB** — S09 is explicitly a DEFAULT gate. The edge-filter *logic* and personas P4/P7 (which assert classification *behavior/semantics*, not tuned production numbers) are the gate; plausible dev defaults in `thresholds.json` pass them. Genuinely production-tuning, not dev-blocking. | **agent-can-stub** (pick defaults, flag in summary) OR **Guy-answer** to supply the real v4.3 file (cheap if he has it). Does not block dev. |
+| **G5** | **Noise floor −50 vs −60 unset (Q-07).** L1 applies noise-floor keep-decision at parse; constants say −50, docs −60, "and it's per-agent anyway." | **STUB** — it's a per-agent config value (`NOISE_FLOOR_DBM`), not an algorithm. Replay data already sits above whatever floor produced it, so any dev default works; the *mechanism* (drop-below-floor at parse, never write sub-floor) is what the code needs and it's specified. | **agent-can-stub** (config default). Real per-environment values are **Guy-answer/field**, production-only. |
+| **G6** | **Sweep-collapse window / 2s (Q-06).** "Should tie to sweep revisit time." | **NOT this track** — sweep-collapse is server-side event construction (Prep layer, S16), not the agent. The agent forwards raw rows. **No agent impact.** | n/a (server track). |
+| **G7** | **Q-01/Q-02 repo naming/private (ASK at S00).** Bootstrap S00 ASK-gates these, but both have logged defaults (`ear-` names, private). | Does not block dev build meaningfully — defaults exist. | **doc-fix/Guy-answer** (trivial). |
+
+**Not blocking (correctly out of scope or production-only):** conservation identity (server, R5 — agent's P17 side is the simple `raw==forward+summarized` count, and the agent emits it; the *composition* bug is server-side), Pass-2/Q-05 (server), correlation (server/analysis), R2 credential model (SEC.3 — production security, dev uses MinIO with any cred), Q-23 legal (production-only), 48h soak / kill-WAN drill (WP-A5, real hardware — S21+), live HackRF (S20). None block the replay+MinIO dev loop.
+
+---
+
+## 3. Dev-env verdict
+
+**buildable-after-cheap-doc-fixes.** The dev bar is the right bar and the docs largely clear it: the CaptureSource seam, MinIO substitution, disk layout, bring-up order, per-session personas and one-command gate are all concrete enough that Opus/Sonnet could stand up the replay→MinIO loop and close S06–S10 objectively.
+
+Two contradictions must be fixed **before the sessions run**, because both are the exact silent-contract-drift the fixture exists to prevent, and both would let an agent pass its own gate having built the wrong thing:
+- **G1 field-drift** — blocks/corrupts S07 (and cements wrong truth into the S03/S04 fixture if not fixed pre-repo). One paired doc commit.
+- **G2 uploader cardinality** — blocks S09 (run-lock/heartbeat/ceiling topology). One heartbeat-semantics ADR.
+
+Both are D-030-class pre-repo fixes the audit already flags (Section B items 1–3). They cost one edit each *now*; after the fixture is authored they cost a re-derivation. Everything else (ceiling policy, thresholds.json, noise floor) is legitimately stub-able under the project's DEFAULT-gate / seam discipline and does not stall the dev build — the agent ships a clearly-flagged default and proceeds, which is exactly the P5-xfail pattern the runsheet endorses.
+
+Net: **~80% builds as-written; ~15% builds after two cheap doc-fixes + normal stubbing; ~5% is production-only (soak, live RF, real R2/creds) and correctly outside the dev bar.**
