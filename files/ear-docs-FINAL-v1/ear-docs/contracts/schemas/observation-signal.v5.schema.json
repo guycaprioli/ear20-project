@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ear:observation-signal:v5",
+  "title": "EAR signal-feed observation (obs_ files, one JSON object per line)",
+  "type": "object",
+  "required": ["schema_version","observed_at","agent_id","earfcn","frequency_mhz","power_dbm","band","filter_action","observation_count","config_version"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "v5"},
+    "observed_at":   {"type": "string", "format": "date-time", "description": "UTC ISO-8601"},
+    "agent_id":      {"type": "string", "pattern": "^[a-z]{3}-rf[0-9]+[a-d]$"},
+    "earfcn":        {"type": "integer", "minimum": 0},
+    "frequency_mhz": {"type": "number"},
+    "power_dbm":     {"type": "number", "description": "raw, uncalibrated relative dB"},
+    "band":          {"type": "string", "enum": ["low","high"]},
+    "power_bin":     {"type": "integer", "description": "ADVISORY edge-filter key; server re-bins authoritatively"},
+    "filter_action": {"const": "FORWARD"},
+    "observation_count": {"const": 1},
+    "duty_cycle":    {"type": "number"},
+    "config_version": {"type": "string"}
+  }
+}

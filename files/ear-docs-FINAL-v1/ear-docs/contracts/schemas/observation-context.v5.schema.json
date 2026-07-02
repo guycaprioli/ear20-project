@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ear:observation-context:v5",
+  "title": "EAR context-feed record (ctx_ files): summaries, L4.5 heartbeats, config stamps",
+  "type": "object",
+  "required": ["schema_version","observed_at","agent_id","record_type","config_version"],
+  "properties": {
+    "schema_version": {"const": "v5"},
+    "observed_at":   {"type": "string", "format": "date-time"},
+    "agent_id":      {"type": "string", "pattern": "^[a-z]{3}-rf[0-9]+[a-d]$"},
+    "record_type":   {"type": "string", "enum": ["summary","l45_heartbeat","config_stamp"]},
+    "config_version": {"type": "string"}
+  },
+  "allOf": [
+    {"if": {"properties": {"record_type": {"const": "summary"}}},
+     "then": {"required": ["earfcn","band","filter_action","observation_count","avg_power_dbm","window_start","window_end"],
+       "properties": {"filter_action": {"enum": ["AGGREGATE","FILTER"]},
+         "earfcn": {"type":"integer"}, "band": {"enum":["low","high"]},
+         "observation_count": {"type":"integer","minimum":1},
+         "avg_power_dbm": {"type":"number"}, "duty_cycle": {"type":"number"},
+         "window_start": {"type":"string","format":"date-time"}, "window_end": {"type":"string","format":"date-time"}}}},
+    {"if": {"properties": {"record_type": {"const": "l45_heartbeat"}}},
+     "then": {"required": ["earfcn","rule_id","observation_count","avg_power_dbm","window_start","window_end"],
+       "properties": {"rule_id": {"type":"string"}, "earfcn": {"type":"integer"},
+         "observation_count": {"type":"integer","minimum":0}, "avg_power_dbm": {"type":["number","null"]},
+         "window_start": {"type":"string","format":"date-time"}, "window_end": {"type":"string","format":"date-time"}}}},
+    {"if": {"properties": {"record_type": {"const": "config_stamp"}}},
+     "then": {"required": ["capture_config"],
+       "properties": {"capture_config": {"type":"object",
+         "required": ["noise_floor_dbm","lna_gain","vga_gain","bin_width"],
+         "properties": {"noise_floor_dbm":{"type":"number"},"lna_gain":{"type":"integer"},"vga_gain":{"type":"integer"},
+           "amp_enabled":{"type":"boolean"},"antenna_power":{"type":"boolean"},"bin_width":{"type":"integer"},
+           "edge_filter_thresholds":{"type":"object"}}}}}}
+  ]
+}

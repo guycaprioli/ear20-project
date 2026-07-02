@@ -1,0 +1,259 @@
+# EAR System — Data Workflow Rules (v1, DRAFT)
+
+> **SCOPE (this effort):** Covers **Level 1 — dataset preparation**: the local-host capture/upload chain and the server-side steps that build the **event dataset** (power-bin grouping, boundary reconciliation, event construction, noise filtering) up to the analysis handoff. **Level 2 — analysis** (CV/periodicity, scoring, tracker classification, threat reports, A/B tuning) is a **separate effort** that consumes the event dataset and is out of scope here.
+
+### Contracts the data must satisfy at every hop, from antenna to report
+
+**Purpose.** Every major breakage in this system's history was a *silent contract violation*, not a code bug: `time_bucket` silently changed meaning and broke `hours_present`; the edge filter changed what a "row" means and the server never learned; storage paths and bucket prefixes drifted between builds. This document defines the data chain as a sequence of **hops**, and at each hop fixes a **contract** — rules a design must meet. A change that violates a rule is rejected by design, not discovered in production.
+
+**How to read this.** The data makes nine hops from antenna to report. Each hop has one rule-set (R1–R9), preceded by the meta-rule (R0) that governs how all contracts may change. Every rule-set uses the same five headings:
+
+- **MOVES** — what data crosses this hop, in what shape.
+- **PRODUCER GUARANTEES** — what the upstream side promises.
+- **CONSUMER MAY ASSUME** — what the downstream side is entitled to rely on (and nothing more).
+- **NEVER** — invariants that may never change without a version bump.
+- **ENFORCED BY** — the automated check that makes the rule real. *A rule with no check is not a rule.*
+
+**The chain at a glance:**
+
+```
+ [antenna] ──R1──► JSONL row ──R2──► edge-filtered row ──R3──► rotated .gz file
+     ──R4──► transport (MinIO/R2 object) ──R5──► ingest (DuckDB observations)
+     ──R6──► analytical columns ──R7──► pipeline stages ──R8──► results (Postgres)
+     ──R9──► forensic report
+```
+
+---
+
+## R0 — Change discipline (meta-rule, governs R1–R9)
+
+- **R0.1 — Meaning is immutable.** The meaning of an existing field, column, or value never changes. To evolve, *add* a new field/column and deprecate the old one; never repurpose. (This one rule prevents the `time_bucket` → `hours_present` class of bug.)
+- **R0.2 — Everything is versioned.** Every record and every file carries a `schema_version`. Consumers reject versions they do not recognize rather than guessing.
+- **R0.3 — Every rule has a check.** Each rule below names an automated enforcement: a shared schema, a contract test, a runtime assertion, or a CI gate. Unenforced rules are documentation, and documentation is what failed before.
+- **R0.4 — Paired change.** A producer and its consumer are never changed in the same commit unless the contract test between them changes in that commit too.
+- **R0.5 — Rules travel with the code.** This document lives in both the agent repo and the server repo, and is referenced from each `CLAUDE.md`, so automated (Claude Code) and human edits are bound by it.
+
+---
+
+## R1 — Observation record  ·  *antenna → JSONL row*
+
+**MOVES.** One RF observation, serialized as a single JSONL line, written by the scanner.
+
+**PRODUCER GUARANTEES (scanner).**
+- Emits exactly these fields: `time`, `agent_id`, `band`, `earfcn`, `frequency_mhz`, `power_dbm`, `direction`, `observation_count`, `filter_action`, `duty_cycle`, `schema_version`.
+- `time` is ISO-8601 UTC, taken from the host's NTP-synced clock, and represents the **observation** moment.
+- `agent_id` matches `^rf\d+[a-d]$`, lowercase.
+- `observation_count ≥ 1`; `duty_cycle ∈ [0,1]`.
+
+**CONSUMER MAY ASSUME.** The fields above exist and are typed as stated. Nothing about calibration of `power_dbm`. Nothing about ordering within a file.
+
+**NEVER.**
+- `power_dbm` is **uncalibrated relative** dB; it is never re-interpreted as absolute/calibrated power. Calibration, if ever added, is a *new* field.
+- `time` is never the write time or upload time.
+- A field's meaning never changes (R0.1); unknown new fields are ignored by consumers, missing required fields fail loudly.
+
+**ENFORCED BY.** A shared JSON-Schema (`observation.schema.json`) committed to both repos. Agent validates at write time (unit test). Loader validates at ingest: violations are counted, logged, and quarantined — **never silently dropped** (replaces the current `ignore_errors=true`).
+
+> **CHANGES from current behavior (choose consciously):** (1) add `schema_version` to the row — small agent change; (2) NTP-synced clocks become a *provisioning requirement*, because CV analysis of inter-event gaps across 60 sensors is meaningless if clocks drift; (3) loader stops silently discarding malformed rows.
+
+---
+
+## R2 — Edge-filter semantics  ·  *JSONL row → edge-filtered row*
+
+**MOVES.** The uploader's EdgeFilter groups each 5-minute file's rows into `(agent_id, earfcn, power_bin)` clusters and emits one of three record shapes per cluster.
+
+**PRODUCER GUARANTEES (uploader).**
+- `filter_action = 'FORWARD'` → one output row **per raw observation**, `observation_count = 1`. Full fidelity.
+- `filter_action = 'AGGREGATE'` → **one** row per cluster per file; `observation_count` = true count in the cluster; `time` = representative (median) observation time.
+- `filter_action = 'FILTER'` → **one** summary row per cluster; `observation_count` = true count; power = cluster average.
+- The thresholds that produced the classification are recorded.
+
+**CONSUMER MAY ASSUME.** `filter_action` states whether a row is one event (`FORWARD`) or a summary of many (`AGGREGATE`/`FILTER`). `observation_count` is authoritative for volume regardless of shape.
+
+**NEVER.**
+- An `AGGREGATE`/`FILTER` row is **never** treated as a single detection event for periodicity/CV analysis — doing so detects the 5-minute file cadence, not the signal (the false-CRITICAL bug).
+- The three action values never change meaning; new behavior = new action value.
+
+**ENFORCED BY.** Pipeline contract test: consolidation and time-clustering stages must restrict to `filter_action = 'FORWARD' OR filter_action IS NULL`; presence/infrastructure classification weights by `observation_count`. A regression fixture (AGGREGATE-heavy file) asserts zero false CRITICALs.
+
+---
+
+## R3 — File format & rotation  ·  *edge-filtered rows → rotated `.jsonl.gz` file*
+
+**MOVES.** Buffered rows are written to a local JSONL file, rotated, and gzipped for upload.
+
+**PRODUCER GUARANTEES (scanner/uploader).**
+- Filename: `obs_{agent_id}_{YYYY-MM-DD}_{NNNNNN}.jsonl` → `.gz` on upload. Date is UTC.
+- Rotation on 5 minutes **or** 50 MB, whichever first.
+- Files are **write-once**: once rotated and moved past `pending/`, content never changes.
+- Local lifecycle: `pending/ → processing/ → completed/`; `completed/` retained 24 h.
+
+**CONSUMER MAY ASSUME.** A file that exists in transport is complete and immutable. The filename encodes agent and calendar date, but **date-in-name is a labeling convenience, not an ingest-window authority** (a backlog file can arrive late).
+
+**NEVER.**
+- A filename is never reused with different content.
+- The date in the filename is never used as the sole "what's new" mechanism (that is R5's ledger job).
+
+**ENFORCED BY.** Filename regex validated on write and on ingest. Uploader moves file to `processing/` before reading (write-complete barrier). `MIN_FILE_AGE_MS` guard already enforces settle time.
+
+---
+
+## R4 — Transport  ·  *file → object store (MinIO on-site, or R2)*
+
+**MOVES.** The gzipped file becomes an object under a per-sensor prefix in the object store.
+
+**PRODUCER GUARANTEES (uploader).**
+- Object key: `{agent_id}/{filename}.gz` (per-sensor prefix).
+- PUT is atomic — an object is either fully present or absent; no partial objects are ever visible.
+- Upload is retried (backoff, circuit breaker, dead-letter queue); a file not confirmed uploaded stays queued.
+
+**CONSUMER MAY ASSUME (sync service).** Listing a prefix yields only complete objects. Object size is stable once listed. Keys are unique and stable.
+
+**NEVER.**
+- The prefix scheme never drifts (historic `earcore/` vs `rf1a/` confusion is banned — prefix = `agent_id`, full stop).
+- An object is never mutated in place; re-upload of changed content uses a new key or is treated as an error (R5 keys on filename+size/etag).
+
+**ENFORCED BY.** Sync service integrity check (size match on download; the `verify-sync` audit compares store vs local). Endpoint/prefix are config, validated at startup (pydantic-settings). Atomicity is a property of S3/R2 PUT — relied upon, documented.
+
+---
+
+## R5 — Ingest  ·  *object store → DuckDB `observations` table*
+
+### R5.0 — Agent authorization gate (onboarding) — runs BEFORE any fetch/ingest
+
+**MOVES.** No data — the gate that decides *which* agents' folders the server is allowed to fetch and ingest at all. R2 is segmented into per-agent folders (`{agent_id}/…`), so selection is by explicit prefix; this gate governs which prefixes are authorized.
+
+**PRODUCER GUARANTEES (server).**
+- Fetch/ingest iterates an **explicit allowlist** — the `Sensor` registry filtered to authorized status — never raw R2 discovery.
+- Agent lifecycle (status on the `Sensor` row): **`pending → qa → active → disabled`**.
+  - `pending`: folder seen in R2 but not authorized; **not fetched, not ingested.**
+  - `qa`: synced and analyzed **in isolation** (staging context) for onboarding checks — confirm facility, serial→device mapping, band group, capture config, noise-floor sanity, event sanity. **Not in production reports or correlation.**
+  - `active`: in production ingest, analysis, correlation, reports.
+  - `disabled`: retired/suspended; not fetched.
+- Discovery of a *new* R2 prefix produces a **"pending onboarding" notice**, surfacing the agent for review — it never enqueues it for production.
+
+**CONSUMER MAY ASSUME.** Any data in production analysis came from an `active` agent that passed onboarding/QA. A new or misconfigured agent cannot silently enter production.
+
+**NEVER.**
+- Auto-discovery never equals auto-production. An unregistered/`pending` folder is never ingested into production.
+- A `qa` agent's data never enters production reports or cross-sensor correlation until promoted to `active`.
+- Agent status semantics never change under the same names (R0.1).
+
+**ENFORCED BY.** `Sensor` registry as the allowlist; sync iterates `Sensor.objects.filter(status='active')` (plus a separate `qa` path to an isolated staging area); a "discover pending" function *surfaces* new prefixes but cannot enqueue them. Per-agent R2 folders make isolation structural (a `pending` agent's files never intermingle with production).
+
+> **INTENT vs ACTUAL (gap to build, not port):** this gate **did not exist as code** in any reviewed repo. earnest-v3's `refreshAgentList` (`SELECT DISTINCT agent_id FROM ear_observations WHERE time > NOW()-24h`) and gittest2's `_discover_agents` (any `rf*` folder) both **auto-discover with no gate** — a new folder would auto-enter production on the next run. The ingredients existed (earnest-v3 `v3_staging` schema; `rf-device-status` health monitoring module) but were never crystallized into an agent allowlist. Onboarding was enforced *manually* (operator configured what ran). For multi-facility scale this must become a coded gate. Harvest `rf-device-status` (agent health/staleness observability) and the staging-schema concept (isolated QA analysis) into the implementation.
+
+### R5.1 — Fetch + ingest (for authorized agents)
+
+**MOVES.** New objects are synced to the local raw-data volume and loaded into DuckDB via `read_json`.
+
+**PRODUCER GUARANTEES (sync + loader).**
+- Sync downloads only missing/size-mismatched objects (skip-if-exists).
+- Loader ingests each file **exactly once**, tracked in an `ingested_files` ledger (filename, size/etag, row_count, ingested_at).
+- Load = list → anti-join ledger → load new only → record in the **same transaction** as the INSERT.
+- Field mapping and `power_bin` derivation (`floor(power_dbm/bin)*bin`) are fixed and shared with the agent's binning.
+
+**CONSUMER MAY ASSUME.** `observations` contains each uploaded row exactly once. Late-arriving backlog files are ingested whenever they appear (ledger, not filename date, decides). No row silently vanished.
+
+**NEVER.**
+- A file is never ingested twice (would inflate every downstream count).
+- Malformed rows are never silently dropped — counted, logged, quarantined (R1 enforcement).
+- The date-in-filename is never the newness test.
+
+**ENFORCED BY.** Ledger uniqueness constraint on filename(+size/etag). Transactional insert+ledger write (crash cannot record an unfinished load). Post-load assertion: `observations` row delta == sum of ledger row_counts for the batch.
+
+---
+
+## R6 — Analytical column semantics  ·  *`observations` → derived working tables*
+
+**MOVES.** The pipeline builds `power_clustering`, `hourly_stats`, `filter_decisions`, `core_activity_stats`, consolidation and time-clustering tables from `observations`.
+
+**PRODUCER GUARANTEES (stages).** Each column's meaning is documented once and frozen. Specifically the two that bit us:
+- `time_bucket` in `power_clustering`/`core_activity_stats` holds a **raw observation timestamp** (the historic convention), NOT an hour bucket.
+- `hours_present` is derived as `COUNT(DISTINCT date_trunc('hour', time_bucket))` — hours, not observation count. (This is the bugfix; it is now a *contract*, not an implementation detail.)
+
+**CONSUMER MAY ASSUME.** A documented column means exactly what the contract says, forever. Anything needing "hours" derives them explicitly with `date_trunc('hour', …)`; nothing assumes a column is pre-bucketed by reading its name.
+
+**NEVER.**
+- A column's semantic never changes under the same name (R0.1). If `time_bucket` ever needs to mean an hour bucket, that is a **new column** (`hour_bucket`), not a redefinition.
+- `hours_present` is never computed as `COUNT(DISTINCT time_bucket)` again.
+
+**ENFORCED BY.** A `SCHEMA-SEMANTICS.md` column dictionary + a unit test that feeds a known high-frequency signal and asserts `hours_present ≤ timeframe_hours` (catches any regression to observation-counting). Column comments in `schema.sql`.
+
+---
+
+## R7 — Pipeline stages  ·  *working tables → tracker candidates*
+
+**MOVES.** Ordered stages transform working tables into scored `TrackerCandidate` rows per workflow (earduck/eargemini/deep_sleep).
+
+**PRODUCER GUARANTEES (pipeline).**
+- Fixed order: power clustering → infrastructure filtering → core-stats extraction → event consolidation → time clustering → candidate selection.
+- Each run is a full rebuild over the configured window (deterministic given data + config).
+- Only `filter_action='FORWARD'`/NULL rows enter event/CV analysis (R2); `AGGREGATE`/`FILTER` inform presence, weighted by `observation_count`.
+- The resolved config for the run is captured.
+
+**CONSUMER MAY ASSUME.** Candidates reflect the whole configured window, produced by that exact config. Two runs on identical data+config produce identical candidates.
+
+**NEVER.**
+- Stage order is never rearranged silently (each stage declares its input tables; a missing predecessor is a hard error, not empty output).
+- A stage never partially writes on error (transaction per stage); no silent no-ops (the historic chunked-merge no-op is banned).
+
+**ENFORCED BY.** Stage base class asserts required input tables exist/are non-empty before running. Per-stage transaction. Determinism test: same fixture twice → identical candidate set. Config snapshot attached to the run (R8).
+
+---
+
+## R8 — Results persistence  ·  *candidates → Postgres (`AnalysisRun`, `TrackerCandidate`, `CorrelatedDetection`)*
+
+**MOVES.** Candidates and run metadata are written to Postgres; cross-sensor correlation is computed.
+
+**PRODUCER GUARANTEES (runner).**
+- Every candidate is linked to its `AnalysisRun`; every run stores `config_snapshot`, window, workflow, agent, timing, stage results.
+- Correlation joins candidates within the **same band group** (a/c low, b/d high) and overlapping time windows — never across band groups (physically impossible to share an EARFCN).
+- Postgres holds results durably; DuckDB remains the queryable raw/analytical store.
+
+**CONSUMER MAY ASSUME (dashboard/report).** Every result traces to the run and config that produced it. The web tier reads only Postgres — no DuckDB dependency. Correlation reflects real same-band sensor agreement.
+
+**NEVER.**
+- A candidate is never stored without its run + config linkage (no orphan results, no "which settings produced this?" mystery).
+- Correlation never pairs low-band with high-band sensors.
+
+**ENFORCED BY.** FK constraints (candidate → run). `config_snapshot` non-null. Correlation query joins on `Sensor.band_group`; a test asserts no cross-band pairs. Read-path test: report generation touches only Postgres.
+
+---
+
+## R9 — Forensic report  ·  *results → report artifact*
+
+**MOVES.** A run (or comparison) becomes a structured, methodology-traceable report written to the `/reports` volume and surfaced in the dashboard.
+
+**PRODUCER GUARANTEES (report generator).**
+- Every claim traces to a candidate/run/config (threat priority, classification, behavior, recommendation — the proven `FINAL_THREAT_ASSESSMENT` shape).
+- Power-based proximity/bearing statements are labeled **coarse and uncalibrated** (R1 forbids treating dBm as absolute).
+- Report records which sensors/agents and which time window it covers.
+
+**CONSUMER MAY ASSUME (analyst).** Any figure can be traced back to source rows. Proximity language is qualitative, not metric.
+
+**NEVER.**
+- A report never asserts a calibrated distance/power figure from uncalibrated dBm.
+- A report never presents a candidate without its methodology and confidence.
+
+**ENFORCED BY.** Report template pulls only from persisted run data (R8), never recomputes ad hoc. A generation test asserts every reported candidate ID exists in the run. Proximity fields render through a formatter that always emits the "uncalibrated/coarse" qualifier.
+
+---
+
+## Enforcement summary (the checks that make these rules real)
+
+| Rule | Check | Where it runs |
+|---|---|---|
+| R0.2 versioning | `schema_version` present + known | agent write test, loader ingest |
+| R1 record shape | shared `observation.schema.json` | agent unit test + loader |
+| R2 edge semantics | FORWARD-only CV; AGGREGATE fixture → 0 false CRITICAL | pipeline contract test |
+| R3 file rules | filename regex, write-once, settle barrier | agent test |
+| R4 transport | prefix=agent_id, size-verify, atomic PUT | sync integrity check |
+| R5.0 onboarding gate | sync iterates active allowlist; pending folders surfaced not ingested | Sensor registry + sync test |
+| R5 idempotency | ledger uniqueness + transactional load + row-delta assert | loader test + runtime |
+| R6 column meaning | `hours_present ≤ timeframe` test, column comments | pipeline unit test |
+| R7 stages | input-table assertions, per-stage tx, determinism test | pipeline test |
+| R8 persistence | FK + non-null config_snapshot + no cross-band correlation | DB constraints + test |
+| R9 reports | trace-to-source test, uncalibrated formatter | report test |
+
+**Rule of thumb for any future change:** find the hop it touches, read that hop's NEVER list, and if the change would violate it, the change is wrong — evolve by adding, per R0.1. Producer and consumer never move without the contract test moving too (R0.4).

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ear:heartbeat:v1",
+  "title": "EAR agent heartbeat (_health/{agent_id}.json, overwritten per upload run)",
+  "type": "object",
+  "required": [
+    "agent_id",
+    "ts",
+    "status",
+    "disk_pct",
+    "queue_depth",
+    "dlq_count",
+    "config_version",
+    "agent_version"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-z]{3}-rf[0-9]+[a-d]$"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "degraded",
+        "ceiling"
+      ]
+    },
+    "disk_pct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "queue_depth": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "files awaiting upload across all feeds"
+    },
+    "dlq_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "config_version": {
+      "type": "string"
+    },
+    "agent_version": {
+      "type": "string"
+    },
+    "last_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ntp_offset_ms": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "clock offset vs NTP at heartbeat time; continuous drift visibility (time-sync validation hook)"
+    }
+  }
+}

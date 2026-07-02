@@ -1,0 +1,17 @@
+{
+  "$id": "ear:handoff:v1",
+  "title": "Handoff Parquet column spec (events + event_gaps) — matches contracts/EVENT-DATASET-HANDOFF-v1",
+  "partitioning": "handoff/{facility}/{agent_id}/{date}/events.parquet (+ event_gaps.parquet); atomic temp-write+rename",
+  "file_metadata": {"dataset_version": "string", "run_id": "string"},
+  "events": {
+    "facility":"VARCHAR", "agent_id":"VARCHAR", "band_group":"VARCHAR(low|high)", "earfcn":"INTEGER",
+    "power_bin":"INTEGER (authoritative, post Pass-2)", "event_start":"TIMESTAMPTZ(UTC)", "event_end":"TIMESTAMPTZ(UTC)",
+    "detection_count":"INTEGER", "avg_power_dbm":"DOUBLE (uncalibrated relative)", "power_variance":"DOUBLE",
+    "consolidation_confidence":"DECIMAL(0..1)", "observation_count":"BIGINT (edge-weighted)",
+    "config_version":"VARCHAR", "run_id":"VARCHAR"
+  },
+  "event_gaps": {
+    "facility":"VARCHAR", "agent_id":"VARCHAR", "earfcn":"INTEGER", "power_bin":"INTEGER",
+    "gap_seconds":"DOUBLE (event_end -> next event_start)", "run_id":"VARCHAR"
+  }
+}
