@@ -35,7 +35,7 @@ so is a review that runs out of patience before it runs out of surface.
 
 # INPUTS
 - Document set (attached). Entry: README.md → REVIEW-BRIEF.md → MANIFEST.md.
-- Contracts in contracts/ (the law). Rationale in DECISION-LOG-v1.md (D-001..D-059). Open items in
+- Contracts in contracts/ (the law). Rationale in DECISION-LOG-v1.md (D-001..D-062). Open items in
   OPEN-QUESTIONS-v1.md. Schemas in contracts/schemas/.
 - DECISION-LOG is authoritative for WHY. A critique ignoring a decision's logged rationale is weaker
   than the design — engage the rationale, don't bypass it.

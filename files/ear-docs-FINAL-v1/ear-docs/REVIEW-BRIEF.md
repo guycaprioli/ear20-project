@@ -2,7 +2,7 @@
 ### Read `README.md` first (the index). This brief tells you where to push hardest and hands you the weak spots I already suspect, so your time goes to finding what I couldn't see — not rediscovering what I flag here.
 
 ## What you're reviewing
-A complete **pre-code** architecture + build plan for a multi-facility RF tracker-detection system: Python agents (HackRF capture, edge feed-prep, R2 upload) → containerized Django/DuckDB Level 1 server (gated ingest → event construction → Parquet handoff) → Level 2 analysis (feature extraction → G1–G6 classification → scoring → dashboard). 60 decisions logged with rationale; 19-persona executable fixture; session-by-session runsheet with Opus/Sonnet assignment. Single operator, greenfield rebuild of a system that ran for ~6 months.
+A complete **pre-code** architecture + build plan for a multi-facility RF tracker-detection system: Python agents (HackRF capture, edge feed-prep, R2 upload) → containerized Django/DuckDB Level 1 server (gated ingest → event construction → Parquet handoff) → Level 2 analysis (feature extraction → G1–G6 classification → scoring → dashboard). 62 decisions logged with rationale (D-001…D-062); 19-persona executable fixture; session-by-session runsheet with Opus/Sonnet assignment. Single operator, greenfield rebuild of a system that ran for ~6 months.
 
 ## Ground rules for the review
 - **Steelman first, then break.** Assume each decision had a reason (it's in `DECISION-LOG`); argue the strongest case FOR it, *then* attack that. A critique that ignores the logged rationale is weaker than the design.
@@ -29,7 +29,7 @@ A complete **pre-code** architecture + build plan for a multi-facility RF tracke
 - **Time-sync** — gap-based analysis assumes synced clocks; drift detection is a heartbeat field + WP-O3, not yet a contract. Under-specified?
 
 ## Questions already open (don't re-raise; extend if you have a view)
-`OPEN-QUESTIONS-v1.md` holds Q-01…Q-22 + Q-T1…Q-T4 (field truth) + the D-030…D-059 `[CLAUDE-DECIDED]` items flagged for the operator's own review. If your finding overlaps one, reference it.
+`OPEN-QUESTIONS-v1.md` holds Q-01…Q-25 + Q-T1…Q-T4 (field truth) + the D-030…D-062 `[CLAUDE-DECIDED]` items flagged for the operator's own review. If your finding overlaps one, reference it.
 
 ## What would most help
 Rank-order the top 5 risks to *project success* (not just correctness). Name anything that should change **before** repo creation (D-030-class structural calls) separately from what can change during build. And flag any place the documents claim more confidence than the evidence supports — over-claiming is the failure mode I can't self-detect.

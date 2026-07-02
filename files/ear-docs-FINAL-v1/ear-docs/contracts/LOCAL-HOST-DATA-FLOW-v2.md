@@ -6,9 +6,9 @@
 
 ### From antenna to object store: capture, enrich, write, buffer, upload
 
-**Scope.** This document captures the **local-host half** of the data chain — everything that happens on a warehouse monitoring PC, from HackRF capture to the batch landing in object storage. It stops at the upload boundary; server-side sync/ingest/pipeline (R5–R9) is covered in `DATA-WORKFLOW-RULES-v1.md`. Read alongside that document — the rule numbers align (L1–L6 here feed R5 there).
+**Scope.** This document captures the **local-host half** of the data chain — everything that happens on a warehouse monitoring PC, from HackRF capture to the batch landing in object storage. It stops at the upload boundary; server-side sync/ingest/pipeline (R5–R9) is covered in `DATA-WORKFLOW-RULES-v3.md`. Read alongside that document — the rule numbers align (L1–L6 here feed R5 there).
 
-**Deployment shape (established, corrected against code v4.3.0).** Multi-facility by design: many hosts across sites (`ral`, `cht`, `dal`, …) push to one central Cloudflare R2 bucket; the server is often remote and pulls by facility prefix. Each monitoring PC runs **four independent scanner processes** (systemd template `uplink-scanner@{a..d}`, per-device env, staggered start) writing to per-device folders, **plus ONE shared EPHEMERAL uploader per host (D-045)** — a systemd **timer oneshot** (`uplink-upload.timer`, ~5-min cadence matching rotation) that scans all four devices' folders, filters/splits/uploads, writes the heartbeat, and exits — plus one shared DLQ (poison files only). *(Per-device isolation is at the folder/data level. A failed upload run simply exits; the next timer tick retries — no resident uploader to crash or restart.)* Scanners are otherwise fully independent — one per HackRF (a/b/c/d). They share only the physical machine and its network link. There is **no shared queue and no fan-in**: each device has its own scanner process, its own local folders, its own uploader, and its own dead-letter queue. Staggered startup (0/3/6/9s) is a **HackRF driver/USB initialization requirement**, not queue coordination.
+**Deployment shape (established, corrected against code v4.3.0).** Multi-facility by design: many hosts across sites (`ral`, `cht`, `dal`, …) push to one central Cloudflare R2 bucket; the server is often remote and pulls by facility prefix. Each monitoring PC runs **four independent scanner processes** (systemd template `uplink-scanner@{a..d}`, per-device env, staggered start) writing to per-device folders, **plus ONE shared EPHEMERAL uploader per host (D-045)** — a systemd **timer oneshot** (`uplink-upload.timer`, ~5-min cadence matching rotation) that scans all four devices' folders, filters/splits/uploads, writes the heartbeat, and exits — plus one shared DLQ (poison files only). *(Per-device isolation is at the folder/data level. A failed upload run simply exits; the next timer tick retries — no resident uploader to crash or restart.)* Scanners are otherwise fully independent — one per HackRF (a/b/c/d). They share only the physical machine and its network link. Each device has its own scanner process and its own local `pending/`/`processing/`/`completed/` folders; the **host** has exactly **one shared ephemeral uploader and one shared DLQ** (D-016/D-045). The single uploader run fans in across all four device folders and, per run, writes each device's `_health/{agent_id}.json` heartbeat — so `disk_pct` is host-level while `queue_depth`/`dlq_count` are per-device (see the per-field scope annotations in `heartbeat.v1.schema.json`). Staggered startup (0/3/6/9s) is a **HackRF driver/USB initialization requirement**, not queue coordination. *(Reconciled per audit finding LEAD.1/REL.1 — prose here previously said "its own uploader/DLQ" and the diagram "4 independent uploaders", contradicting D-016/D-045.)*
 
 ```
 ONE WAREHOUSE PC (×7–15 hosts)
@@ -23,7 +23,7 @@ ONE WAREHOUSE PC (×7–15 hosts)
 │  └──────────────────────────┘        └──────────────────────────┘       │
 │  (a,c = low band 662–850)             (b,d = high band 1709–1911)         │
 └───────────────────────────────────────────────────────────────────────┘
-                                    │  (4 independent uploaders per host)
+                                    │  (1 shared ephemeral uploader per host — fan-in at upload)
                                     ▼
                        central Cloudflare R2 bucket (R2-PRIMARY — all facilities)
                        keys: {agent_id}/obs_{agent_id}_{date}_{seq}.jsonl.gz
@@ -90,16 +90,16 @@ ONE WAREHOUSE PC (×7–15 hosts)
 - Spawns `hackrf_sweep` directly for its device's band range (one-shot mode).
 - Parses sweep output (`date, time, hz_low, hz_high, bin_width, num_samples, dB…`), maps each bin frequency → EARFCN.
 - Applies the noise-floor keep-decision at parse time (readings below floor are **not** emitted). Default floor is device config (`NOISE_FLOOR_DBM`); see open item on the −50 vs −60 discrepancy.
-- Enriches via `fromReading(reading, agentId)` → stamps: `time` (ISO-8601 UTC, from host clock), `agent_id`, `band`, `earfcn`, `frequency_mhz` (2-dp), `power_dbm` (1-dp), `direction: 'ul'`.
+- Enriches via `fromReading(reading, agentId)` → stamps: `observed_at` (ISO-8601 UTC, from host clock), `agent_id`, `band`, `earfcn`, `frequency_mhz` (2-dp), `power_dbm` (1-dp), `config_version`, `schema_version='v5'`. *(No `direction` field — capture is uplink-only; `time`→`observed_at` per D-052. Finding LEAD.2.)*
 
-**CONSUMER MAY ASSUME (this host's file writer).** Each object has the seven core fields, typed. Nothing about calibration of `power_dbm`. No `power_bin`, `observation_count`, `duty_cycle`, or `filter_action` yet — those are added later at the edge-filter step (L4/R2).
+**CONSUMER MAY ASSUME (this host's file writer).** Each object has the eight core fields, typed. Nothing about calibration of `power_dbm`. No `power_bin`, `observation_count`, `duty_cycle`, or `filter_action` yet — those are added later at the edge-filter step (L4/R2).
 
 **NEVER.**
 - `power_dbm` is uncalibrated relative dB; never treated as absolute (any calibration = new field).
-- `time` is the observation moment, never the write/upload moment.
+- `observed_at` is the observation moment, never the write/upload moment.
 - Sub-noise-floor readings are never written (they don't exist on disk).
 
-**ENFORCED BY.** `observationSchema.validate()` (existing) checks required fields, ISO time, band/earfcn/frequency/power types, direction ∈ {ul,dl}. Startup device-presence check (L0).
+**ENFORCED BY.** Validation against `contracts/schemas/observation-signal.v5.schema.json` (authoritative, D-052) checks required fields, ISO `observed_at`, band/earfcn/frequency/power types (no `direction` — uplink-only). Startup device-presence check (L0).
 
 > **OPEN:** live noise floor — constants say `NOISE_FLOOR_DBM: -50`, docs/eartest say −60. Confirm the deployed value and record it as the contract. (Matters: it's the floor below which *no data exists*, so the server's −110 references are dead.)
 > **NOTE:** schema has optional `carrier, cell_id, pci, latitude, longitude, metadata` fields — not populated at capture in this build (no GPS tagging observed). Listed for completeness.
@@ -278,4 +278,4 @@ It is thereby **structurally impossible** to construct an event from a summary r
 | 7 | `R2_PREFIX = {agent_id}` verified per host | L6 | Low (but silent if wrong) |
 
 ## What this document deliberately does NOT cover
-Server-side sync, ingest ledger, DuckDB pipeline, correlation, results persistence, and reporting are R5–R9 in `DATA-WORKFLOW-RULES-v1.md`. The handoff point is L6/R4: once an object is in the store, the server owns it.
+Server-side sync, ingest ledger, DuckDB pipeline, correlation, results persistence, and reporting are R5–R9 in `DATA-WORKFLOW-RULES-v3.md`. The handoff point is L6/R4: once an object is in the store, the server owns it.

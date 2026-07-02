@@ -34,16 +34,18 @@
     "disk_pct": {
       "type": "number",
       "minimum": 0,
-      "maximum": 100
+      "maximum": 100,
+      "description": "HOST-level disk usage %, shared across the host's 4 sensors (the one shared uploader writes the same value into all four heartbeats). Scope note per finding REL.1/LEAD.1."
     },
     "queue_depth": {
       "type": "integer",
       "minimum": 0,
-      "description": "files awaiting upload across all feeds"
+      "description": "PER-DEVICE: files awaiting upload in THIS agent_id's folder (not host-aggregate). Scope note per finding REL.1."
     },
     "dlq_count": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "description": "PER-DEVICE: poison files in this agent_id's DLQ view. Scope note per finding REL.1."
     },
     "config_version": {
       "type": "string"

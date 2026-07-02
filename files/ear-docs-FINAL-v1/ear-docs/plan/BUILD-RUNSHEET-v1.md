@@ -28,7 +28,7 @@
 | S18 | WP-S10: **legacy-corpus end-to-end** (S05 adapter output through the full pipeline); human review vs known truth (20595) | ear-server | **Opus** | Event dataset sane vs Guy's knowledge — **Guy reviews** | ASK Q-13 (band plan confirm) |
 | S19 | WP-O1: ops dashboard (sensor board w/ heartbeat staleness, pending review, runs, quarantine) | ear-server | Sonnet | Usable against dev data | — |
 | S19a | WP-L1: L2 feature extraction over handoff Parquet | ear-analysis | **Opus** | Features match hand-computed values for personas P1–P3 | — |
-| S19b | WP-L2: classifier v1 (G1–G6) + scoring; Postgres models | ear-analysis | **Opus** | P1→G1, P2→G1, P3→G4 assertions green; unclassified queue works | DEFAULT Q-T1..T4 (rules provisional until field answers) |
+| S19b | WP-L2: classifier v1 (G1–G6) + scoring; Postgres models | ear-analysis | **Opus** | P1→G1, P2→G1, **P15→G1** (deep-sleep — must NOT be starved: compute CV on the few gaps, don't drop at `min_events`; finding QA.5/A1), P3→G4 assertions green; unclassified queue works | DEFAULT Q-T1..T4 (rules provisional until field answers) |
 | S19c | WP-L3: provisional correlation (seam, marked) | ear-analysis | **Opus** | Same-device-two-sensors fixture case correlates; seam swappable | DEFAULT (real method open) |
 | S19d | WP-L4: analysis dashboard + run_level2 job/timer | ear-analysis | Sonnet | **Legacy corpus classifies sensibly — Guy reviews (20595→G1)** | ASK Q-16 (summary page shape) |
 | S19e | **UAT gate (D-056):** Guy runs journeys J1–J7 against dev data (fixture + legacy corpus) per DASHBOARD-DESIGN-v1 | ear-server/ear-analysis | Guy + Sonnet (fixes) | All journeys ✅ or filed fixes; **M5 blocked on open red journey** | ASK Q-16 informs J6 |

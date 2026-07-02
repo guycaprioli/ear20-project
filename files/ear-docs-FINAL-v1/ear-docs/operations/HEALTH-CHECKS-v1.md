@@ -19,7 +19,7 @@ The unifying process. One run evaluates the whole chain and produces a **verdict
 | Object store | list on bucket succeeds | unreachable / auth |
 | Agent liveness | every **active** sensor's heartbeat fresh (< 3× upload cadence) | stale → **that sensor flagged**; many stale in one facility → WAN suspicion noted |
 | Agent condition | heartbeat fields sane: status ok, disk below ceiling, queue not monotonically growing across sweeps, `ntp_offset_ms` within tolerance | any breach flagged per sensor |
-| Capture advancing | new `obs_`/`ctx_` objects per active sensor within expected window | none arriving while heartbeat fresh = capture problem (distinct from host-down) |
+| Capture advancing | **`ctx_`/heartbeat freshness** per active sensor within its expected window drives the *liveness* verdict; `obs_` (FORWARD) volume is **informational and self-baselined** — near-zero is *correct* for a quiet deep-sleeper (D-028/P15) and is **never a hard red** (finding OPS.10) | `ctx_` stale while heartbeat fresh = capture problem (distinct from host-down) |
 | Pipeline | last L1 run: recent (< 2× cadence) AND exit 0 | old or failed |
 | Handoff advancing | newest Parquet partition per active agent within expected window | stale = pipeline completing but not producing |
 | L2 | last run_level2 recent + successful; candidate/classification tables updated | stale |
